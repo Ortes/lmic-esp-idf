@@ -32,7 +32,7 @@ static void hal_io_init () {
     ESP_LOGI(TAG, "Starting IO initialization");
 
     gpio_config_t io_conf;
-    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.mode = GPIO_MODE_OUTPUT;
     io_conf.pin_bit_mask = 1<<lmic_pins.nss;
     if(lmic_pins.rst != LMIC_UNUSED_PIN) {
@@ -68,7 +68,7 @@ void hal_pin_nss (u1_t val) {
 // set radio RST pin to given value (or keep floating!)
 void hal_pin_rst (u1_t val) {
     gpio_config_t io_conf;
-    io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+    io_conf.intr_type = GPIO_INTR_DISABLE;
     io_conf.pin_bit_mask = (1<<lmic_pins.rst);
     io_conf.pull_down_en = 0;
     io_conf.pull_up_en = 0;
@@ -165,6 +165,7 @@ static void hal_time_init () {
   config.divider = 1600;
   config.intr_type = 0;
   config.counter_en = TIMER_PAUSE;
+  config.clk_src = TIMER_SRC_CLK_DEFAULT;
   /*Configure timer*/
   timer_init(timer_group, timer_idx, &config);
   /*Stop timer counter*/
