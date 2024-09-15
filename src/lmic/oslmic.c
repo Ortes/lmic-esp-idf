@@ -11,15 +11,15 @@
 
 #include "lmic.h"
 #include <stdbool.h>
+#include <freertos/FreeRTOS.h>
+#include "esp_log.h"
+#include "freertos/task.h"
+#include "freertos/portmacro.h"
 
-// RUNTIME STATE
-static struct {
-    osjob_t* scheduledjobs;
-    osjob_t* runnablejobs;
-} OS;
+
+static portMUX_TYPE my_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 void os_init () {
-    memset(&OS, 0x00, sizeof(OS));
     hal_init();
     radio_init();
     LMIC_init();
@@ -29,101 +29,65 @@ ostime_t os_getTime () {
     return hal_ticks();
 }
 
-static u1_t unlinkjob (osjob_t** pnext, osjob_t* job) {
-    for( ; *pnext; pnext = &((*pnext)->next)) {
-        if(*pnext == job) { // unlink
-            *pnext = job->next;
-            return 1;
+osjob_t* jobs = NULL;
+
+void os_clearCallback () {
+    taskENTER_CRITICAL(&my_spinlock);
+    osjob_t* prev = NULL;
+    for (osjob_t* j = jobs; j != NULL; j = j->next) {
+        if (prev != NULL) {
+            free(prev);
+        }
+        prev = j;
+    }
+    free(prev);
+    taskEXIT_CRITICAL(&my_spinlock);
+    #if LMIC_DEBUG_LEVEL > 1
+        lmic_printf("%ld: Cleared jobs\n", os_getTime());
+    #endif
+}
+
+// executeTask
+
+void os_setTimedCallback (ostime_t time, osjobcb_t cb) {
+    osjob_t* j = malloc(sizeof(osjob_t));
+
+    if (j == NULL) {
+        ESP_LOGE("error", "Failed to allocate memory for job");
+        exit(1);
+    }
+
+    taskENTER_CRITICAL(&my_spinlock);
+
+    j->deadline = time;
+    j->func = cb;
+    j->next = NULL;
+
+    if (jobs == NULL) {
+        jobs = j;
+    } else {
+        osjob_t* prev = NULL;
+        osjob_t* current = jobs;
+        while (current != NULL && current->deadline < time) {
+            prev = current;
+            current = current->next;
+        }
+        if (prev == NULL) {
+            j->next = jobs;
+            jobs = j;
+        } else {
+            prev->next = j;
+            j->next = current;
         }
     }
-    return 0;
-}
 
-// clear scheduled job
-void os_clearCallback (osjob_t* job) {
-    hal_disableIRQs();
-    u1_t res = unlinkjob(&OS.scheduledjobs, job) || unlinkjob(&OS.runnablejobs, job);
-    hal_enableIRQs();
+    if (jobs->deadline <= time) {
+        hal_setTask(jobs, jobs->deadline);
+    }
+
+    taskEXIT_CRITICAL(&my_spinlock);
     #if LMIC_DEBUG_LEVEL > 1
-        if (res)
-            lmic_printf("%ld: Cleared job %p\n", os_getTime(), job);
+        lmic_printf("%ld: Scheduled job %p, cb %p at %ld\n", os_getTime(), j, cb, time);
     #endif
 }
 
-// schedule immediately runnable job
-void os_setCallback (osjob_t* job, osjobcb_t cb) {
-    osjob_t** pnext;
-    hal_disableIRQs();
-    // remove if job was already queued
-    os_clearCallback(job);
-    // fill-in job
-    job->func = cb;
-    job->next = NULL;
-    // add to end of run queue
-    for(pnext=&OS.runnablejobs; *pnext; pnext=&((*pnext)->next));
-    *pnext = job;
-    hal_enableIRQs();
-    #if LMIC_DEBUG_LEVEL > 1
-        lmic_printf("%ld: Scheduled job %p, cb %p ASAP\n", os_getTime(), job, cb);
-    #endif
-}
-
-// schedule timed job
-void os_setTimedCallback (osjob_t* job, ostime_t time, osjobcb_t cb) {
-    osjob_t** pnext;
-    hal_disableIRQs();
-    // remove if job was already queued
-    os_clearCallback(job);
-    // fill-in job
-    job->deadline = time;
-    job->func = cb;
-    job->next = NULL;
-    // insert into schedule
-    for(pnext=&OS.scheduledjobs; *pnext; pnext=&((*pnext)->next)) {
-        if((*pnext)->deadline - time > 0) { // (cmp diff, not abs!)
-            // enqueue before next element and stop
-            job->next = *pnext;
-            break;
-        }
-    }
-    *pnext = job;
-    hal_enableIRQs();
-    #if LMIC_DEBUG_LEVEL > 1
-        lmic_printf("%ld: Scheduled job %p, cb %p at %ld\n", os_getTime(), job, cb, time);
-    #endif
-}
-
-// execute jobs from timer and from run queue
-void os_runloop () {
-    while(1) {
-        os_runloop_once();
-    }
-}
-
-void os_runloop_once() {
-    #if LMIC_DEBUG_LEVEL > 1
-        bool has_deadline = false;
-    #endif
-    osjob_t* j = NULL;
-    hal_disableIRQs();
-    // check for runnable jobs
-    if(OS.runnablejobs) {
-        j = OS.runnablejobs;
-        OS.runnablejobs = j->next;
-    } else if(OS.scheduledjobs && hal_checkTimer(OS.scheduledjobs->deadline)) { // check for expired timed jobs
-        j = OS.scheduledjobs;
-        OS.scheduledjobs = j->next;
-        #if LMIC_DEBUG_LEVEL > 1
-            has_deadline = true;
-        #endif
-    } else { // nothing pending
-        hal_sleep(); // wake by irq (timer already restarted)
-    }
-    hal_enableIRQs();
-    if(j) { // run job callback
-        #if LMIC_DEBUG_LEVEL > 1
-            lmic_printf("%ld: Running job %p, cb %p, deadline %ld\n", os_getTime(), j, j->func, has_deadline ? j->deadline : 0);
-        #endif
-        j->func(j);
-    }
-}

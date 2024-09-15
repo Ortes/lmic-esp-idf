@@ -693,7 +693,7 @@ static void setBcnRxParams (void) {
 static void initJoinLoop (void) {
     LMIC.txChnl = os_getRndU1() % 3;
     LMIC.adrTxPow = 14;
-    setDrJoin(DRCHG_SET, DR_SF7);
+    setDrJoin(DRCHG_SET, DR_SF11);
     initDefaultChannels(1);
     ASSERT((LMIC.opmode & OP_NEXTCHNL)==0);
     LMIC.txend = LMIC.bands[BAND_MILLI].avail + rndDelay(8);
@@ -1380,7 +1380,7 @@ static void schedRx12 (ostime_t delay, osjobcb_t func, u1_t dr) {
     // (again note that hsym is half a sumbol time, so no /2 needed)
     LMIC.rxtime = LMIC.txend + delay + PAMBL_SYMS * hsym - LMIC.rxsyms * hsym;
 
-    os_setTimedCallback(&LMIC.osjob, LMIC.rxtime - RX_RAMPUP, func);
+    os_setTimedCallback(LMIC.rxtime - RX_RAMPUP, func);
 }
 
 static void setupRx1 (osjobcb_t func) {
@@ -1411,7 +1411,7 @@ static void txDone (ostime_t delay, osjobcb_t func) {
     if( /* TX datarate */LMIC.rxsyms == DR_FSK ) {
         LMIC.rxtime = LMIC.txend + delay - PRERX_FSK*us2osticksRound(160);
         LMIC.rxsyms = RXLEN_FSK;
-        os_setTimedCallback(&LMIC.osjob, LMIC.rxtime - RX_RAMPUP, func);
+        os_setTimedCallback(LMIC.rxtime - RX_RAMPUP, func);
     }
     else
 #endif
@@ -1456,7 +1456,7 @@ static bit_t processJoinAccept (void) {
         // Build next JOIN REQUEST with next engineUpdate call
         // Optionally, report join failed.
         // Both after a random/chosen amount of ticks.
-        os_setTimedCallback(&LMIC.osjob, os_getTime()+delay,
+        os_setTimedCallback(os_getTime()+delay,
                             (delay&1) != 0
                             ? FUNC_ADDR(onJoinFailed)      // one JOIN iteration done and failed
                             : FUNC_ADDR(runEngineUpdate)); // next step to be delayed
@@ -1480,6 +1480,9 @@ static bit_t processJoinAccept (void) {
     if( !aes_verifyMic0(LMIC.frame, dlen-4) ) {
         EV(specCond, ERR, (e_.reason = EV::specCond_t::JOIN_BAD_MIC,
                            e_.info   = mic));
+#if LMIC_DEBUG_LEVEL > 0
+        lmic_printf("%ld: Invalid join-frame MIC", os_getTime());
+#endif
         goto badframe;
     }
 
@@ -1499,9 +1502,6 @@ static bit_t processJoinAccept (void) {
             u4_t freq = convFreq(&LMIC.frame[dlen]);
             if( freq ) {
                 LMIC_setupChannel(chidx, freq, 0, -1);
-#if LMIC_DEBUG_LEVEL > 1
-                lmic_printf("%ld: Setup channel, idx=%d, freq=%lu\n", os_getTime(), chidx, (unsigned long)freq);
-#endif
             }
         }
     }
@@ -1746,7 +1746,7 @@ static void buildDataFrame (void) {
 static void onBcnRx (xref2osjob_t job) {
     // If we arrive via job timer make sure to put radio to rest.
     os_radio(RADIO_RST);
-    os_clearCallback(&LMIC.osjob);
+    os_clearCallback();
     if( LMIC.dataLen == 0 ) {
         // Nothing received - timeout
         LMIC.opmode &= ~(OP_SCAN | OP_TRACK);
@@ -1757,7 +1757,7 @@ static void onBcnRx (xref2osjob_t job) {
         // Something is wrong with the beacon - continue scan
         LMIC.dataLen = 0;
         os_radio(RADIO_RXON);
-        os_setTimedCallback(&LMIC.osjob, LMIC.bcninfo.txtime, FUNC_ADDR(onBcnRx));
+        os_setTimedCallback(LMIC.bcninfo.txtime, FUNC_ADDR(onBcnRx));
         return;
     }
     // Found our 1st beacon
@@ -1784,7 +1784,7 @@ static void startScan (void) {
     LMIC.opmode = (LMIC.opmode | OP_SCAN) & ~(OP_TXRXPEND);
     setBcnRxParams();
     LMIC.rxtime = LMIC.bcninfo.txtime = os_getTime() + sec2osticks(BCN_INTV_sec+1);
-    os_setTimedCallback(&LMIC.osjob, LMIC.rxtime, FUNC_ADDR(onBcnRx));
+    os_setTimedCallback(LMIC.rxtime, FUNC_ADDR(onBcnRx));
     os_radio(RADIO_RXON);
 }
 
@@ -1856,7 +1856,7 @@ bit_t LMIC_startJoining (void) {
         initJoinLoop();
         LMIC.opmode |= OP_JOINING;
         // reportEvent will call engineUpdate which then starts sending JOIN REQUESTS
-        os_setCallback(&LMIC.osjob, FUNC_ADDR(startJoining));
+        os_setTimedCallback(os_getTime(), FUNC_ADDR(startJoining));
         return 1;
     }
     return 0; // already joined
@@ -2136,7 +2136,7 @@ static void engineUpdate (void) {
                     // Device has to react! NWK will not roll over and just stop sending.
                     // Thus, we have N frames to detect a possible lock up.
                   reset:
-                    os_setCallback(&LMIC.osjob, FUNC_ADDR(runReset));
+                    os_setTimedCallback(os_getTime(), FUNC_ADDR(runReset));
                     return;
                 }
                 if( (LMIC.txCnt==0 && LMIC.seqnoUp == 0xFFFFFFFF) ) {
@@ -2188,7 +2188,7 @@ static void engineUpdate (void) {
             LMIC.rps     = dndr2rps(LMIC.ping.dr);
             LMIC.dataLen = 0;
             ASSERT(LMIC.rxtime - now+RX_RAMPUP >= 0 );
-            os_setTimedCallback(&LMIC.osjob, LMIC.rxtime - RX_RAMPUP, FUNC_ADDR(startRxPing));
+            os_setTimedCallback(LMIC.rxtime - RX_RAMPUP, FUNC_ADDR(startRxPing));
             return;
         }
         // no - just wait for the beacon
@@ -2206,7 +2206,7 @@ static void engineUpdate (void) {
         os_radio(RADIO_RX);
         return;
     }
-    os_setTimedCallback(&LMIC.osjob, rxtime, FUNC_ADDR(startRxBcn));
+    os_setTimedCallback(rxtime, FUNC_ADDR(startRxBcn));
     return;
 #endif // !DISABLE_BEACONS
 
@@ -2215,7 +2215,7 @@ static void engineUpdate (void) {
                        e_.eui    = MAIN::CDEV->getEui(),
                        e_.info   = osticks2ms(txbeg-now),
                        e_.info2  = LMIC.seqnoUp-1));
-    os_setTimedCallback(&LMIC.osjob, txbeg-TX_RAMPUP, FUNC_ADDR(runEngineUpdate));
+    os_setTimedCallback(txbeg-TX_RAMPUP, FUNC_ADDR(runEngineUpdate));
 }
 
 
@@ -2231,7 +2231,7 @@ void LMIC_setDrTxpow (dr_t dr, s1_t txpow) {
 
 
 void LMIC_shutdown (void) {
-    os_clearCallback(&LMIC.osjob);
+    os_clearCallback();
     os_radio(RADIO_RST);
     LMIC.opmode |= OP_SHUTDOWN;
 }
@@ -2242,7 +2242,7 @@ void LMIC_reset (void) {
                        e_.eui    = MAIN::CDEV->getEui(),
                        e_.info   = EV_RESET));
     os_radio(RADIO_RST);
-    os_clearCallback(&LMIC.osjob);
+    os_clearCallback();
 
     os_clearMem((xref2u1_t)&LMIC,SIZEOFEXPR(LMIC));
     LMIC.devaddr      =  0;
@@ -2283,7 +2283,7 @@ void LMIC_clrTxData (void) {
     LMIC.pendTxLen = 0;
     if( (LMIC.opmode & (OP_JOINING|OP_SCAN)) != 0 ) // do not interfere with JOINING
         return;
-    os_clearCallback(&LMIC.osjob);
+    os_clearCallback();
     os_radio(RADIO_RST);
     engineUpdate();
 }

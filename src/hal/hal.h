@@ -11,6 +11,8 @@
 #ifndef _hal_hal_h_
 #define _hal_hal_h_
 
+#include "../lmic/oslmic.h"
+
 #define NUM_DIO 3
 
 struct lmic_pinmap {

@@ -140,14 +140,11 @@ void os_getArtEui (xref2u1_t buf);
 #ifndef os_getDevEui
 void os_getDevEui (xref2u1_t buf);
 #endif
-#ifndef os_setCallback
-void os_setCallback (xref2osjob_t job, osjobcb_t cb);
-#endif
 #ifndef os_setTimedCallback
-void os_setTimedCallback (xref2osjob_t job, ostime_t time, osjobcb_t cb);
+void os_setTimedCallback (ostime_t time, osjobcb_t cb);
 #endif
 #ifndef os_clearCallback
-void os_clearCallback (xref2osjob_t job);
+void os_clearCallback ();
 #endif
 #ifndef os_getTime
 ostime_t os_getTime (void);
