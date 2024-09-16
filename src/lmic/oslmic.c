@@ -17,8 +17,6 @@
 #include "freertos/portmacro.h"
 
 
-static portMUX_TYPE my_spinlock = portMUX_INITIALIZER_UNLOCKED;
-
 void os_init () {
     hal_init();
     radio_init();
@@ -32,7 +30,6 @@ ostime_t os_getTime () {
 osjob_t* jobs = NULL;
 
 void os_clearCallback () {
-    taskENTER_CRITICAL(&my_spinlock);
     osjob_t* prev = NULL;
     for (osjob_t* j = jobs; j != NULL; j = j->next) {
         if (prev != NULL) {
@@ -41,7 +38,6 @@ void os_clearCallback () {
         prev = j;
     }
     free(prev);
-    taskEXIT_CRITICAL(&my_spinlock);
     #if LMIC_DEBUG_LEVEL > 1
         lmic_printf("%ld: Cleared jobs\n", os_getTime());
     #endif
@@ -56,8 +52,6 @@ void os_setTimedCallback (ostime_t time, osjobcb_t cb) {
         ESP_LOGE("error", "Failed to allocate memory for job");
         exit(1);
     }
-
-    taskENTER_CRITICAL(&my_spinlock);
 
     j->deadline = time;
     j->func = cb;
@@ -81,11 +75,6 @@ void os_setTimedCallback (ostime_t time, osjobcb_t cb) {
         }
     }
 
-    if (jobs->deadline <= time) {
-        hal_setTask(jobs, jobs->deadline);
-    }
-
-    taskEXIT_CRITICAL(&my_spinlock);
     #if LMIC_DEBUG_LEVEL > 1
         lmic_printf("%ld: Scheduled job %p, cb %p at %ld\n", os_getTime(), j, cb, time);
     #endif

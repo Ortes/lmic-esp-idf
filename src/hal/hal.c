@@ -25,19 +25,27 @@
 // Declared here, to be defined an initialized by the application
 extern const lmic_pinmap lmic_pins;
 
+
+static portMUX_TYPE my_spinlock = portMUX_INITIALIZER_UNLOCKED;
+
+void run_jobs_and_schedule_next();
+
 // -----------------------------------------------------------------------------
 // I/O
 
-TaskHandle_t engine_task_handle_gpio;
 
 static QueueHandle_t gpio_evt_queue = NULL;
 
 void engine_task_gpio(void *pvParameters) {
-  uint32_t io_num;
+  uint32_t i;
   for (;;) {
-    if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
-      ESP_LOGI(TAG, "GPIO[%d] intr, val: %d", io_num, gpio_get_level(io_num));
+    if (xQueueReceive(gpio_evt_queue, &i, portMAX_DELAY)) {
+      ESP_LOGI(TAG, "GPIO[%d] intr", i);
+
+      taskENTER_CRITICAL(&my_spinlock);
       radio_irq_handler(i);
+      taskEXIT_CRITICAL(&my_spinlock);
+      run_jobs_and_schedule_next();
     }
   }
 }
@@ -186,7 +194,25 @@ u1_t hal_spi(u1_t data) {
 
 extern osjob_t* jobs;
 
-TaskHandle_t engine_task_handle;
+static TaskHandle_t engine_task_handle;
+
+static gptimer_handle_t gptimer = NULL;
+
+void run_jobs_and_schedule_next() {
+  taskENTER_CRITICAL(&my_spinlock);
+
+  while (jobs->deadline <= hal_ticks() + 1) { // Execute jobs 20us early
+    osjob_t* job = jobs;
+    jobs = job->next;
+    job->func(job);
+    free(job);
+  }
+  gptimer_alarm_config_t alarm_config = {
+      .alarm_count = jobs->deadline,
+  };
+  ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
+  taskEXIT_CRITICAL(&my_spinlock);
+}
 
 void engine_task(void *pvParameters) {
   while (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
@@ -195,16 +221,10 @@ void engine_task(void *pvParameters) {
       ESP_LOGE("HAL", "jobs is NULL main task has been woken up without tasks");
       exit(1);
     }
-    while (jobs->deadline <= hal_ticks()) {
-      osjob_t* job = jobs;
-      jobs = job->next;
-      job->func(job);
-      free(job);
-    }
+    run_jobs_and_schedule_next();
   }
 }
 
-static gptimer_handle_t gptimer = NULL;
 
 static IRAM_ATTR bool timer_on_alarm_cb(gptimer_handle_t timer,
                                       const gptimer_alarm_event_data_t *edata,
