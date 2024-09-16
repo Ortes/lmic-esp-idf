@@ -28,6 +28,28 @@ extern const lmic_pinmap lmic_pins;
 // -----------------------------------------------------------------------------
 // I/O
 
+TaskHandle_t engine_task_handle_gpio;
+
+static QueueHandle_t gpio_evt_queue = NULL;
+
+void engine_task_gpio(void *pvParameters) {
+  uint32_t io_num;
+  for (;;) {
+    if (xQueueReceive(gpio_evt_queue, &io_num, portMAX_DELAY)) {
+      ESP_LOGI(TAG, "GPIO[%d] intr, val: %d", io_num, gpio_get_level(io_num));
+      radio_irq_handler(i);
+    }
+  }
+}
+
+static gptimer_handle_t gptimer = NULL;
+
+static void IRAM_ATTR gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t) arg;
+    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+}
+
 static void hal_io_init() {
   int i;
   ESP_LOGI(TAG, "Starting IO initialization");
@@ -43,6 +65,7 @@ static void hal_io_init() {
   io_conf.pull_up_en = 0;
   gpio_config(&io_conf);
 
+  io_conf.intr_type = GPIO_INTR_POSEDGE;
   io_conf.mode = GPIO_MODE_INPUT;
   io_conf.pin_bit_mask = 0;
   for (i = 0; i < NUM_DIO; i++) {
@@ -51,6 +74,14 @@ static void hal_io_init() {
     }
   }
   gpio_config(&io_conf);
+
+  gpio_install_isr_service(ESP_INTR_FLAG_LOWMED);
+
+  for (i = 0; i < NUM_DIO; i++) {
+    if (lmic_pins.dio[i] != LMIC_UNUSED_PIN) {
+      gpio_isr_handler_add(lmic_pins.dio[i], gpio_isr_handler, (void*) i);
+    }
+  }
 
   ESP_LOGI(TAG, "Finished IO initialization");
 }
@@ -155,32 +186,39 @@ u1_t hal_spi(u1_t data) {
 
 extern osjob_t* jobs;
 
-gptimer_handle_t gptimer = NULL;
-
 TaskHandle_t engine_task_handle;
 
 void engine_task(void *pvParameters) {
   while (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
     ESP_LOGI(TAG, "Time %lu", hal_ticks());
+    if (jobs == NULL) {
+      ESP_LOGE("HAL", "jobs is NULL main task has been woken up without tasks");
+      exit(1);
+    }
     while (jobs->deadline <= hal_ticks()) {
-        
+      osjob_t* job = jobs;
+      jobs = job->next;
+      job->func(job);
+      free(job);
     }
   }
 }
 
-static bool example_timer_on_alarm_cb(gptimer_handle_t timer,
+static gptimer_handle_t gptimer = NULL;
+
+static IRAM_ATTR bool timer_on_alarm_cb(gptimer_handle_t timer,
                                       const gptimer_alarm_event_data_t *edata,
                                       void *user_ctx) {
-  uint64_t now;
-  gptimer_get_raw_count(timer, &now);
-  gptimer_alarm_config_t alarm_config = {
-      .alarm_count = now + 50000,
-  };
-  ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
-
-  ESP_DRAM_LOGI(TAG, "Alarm at %llu", now);
   vTaskNotifyGiveFromISR(engine_task_handle, tskIDLE_PRIORITY);
   return pdTRUE;
+}
+
+void hal_schedule_wakeup_at(u4_t time) {
+  u4_t now = hal_ticks();
+  gptimer_alarm_config_t alarm_config = {
+      .alarm_count = time,
+  };
+  ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
 }
 
 static void hal_time_init() {
@@ -195,7 +233,7 @@ static void hal_time_init() {
   ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
 
   gptimer_event_callbacks_t cbs = {
-      .on_alarm = example_timer_on_alarm_cb,
+      .on_alarm = timer_on_alarm_cb,
   };
   ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, NULL));
 
