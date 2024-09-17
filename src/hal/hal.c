@@ -26,7 +26,7 @@
 extern const lmic_pinmap lmic_pins;
 
 
-static portMUX_TYPE my_spinlock = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t semaphore = NULL;
 
 void run_jobs_and_schedule_next();
 
@@ -36,26 +36,23 @@ void run_jobs_and_schedule_next();
 
 static QueueHandle_t gpio_evt_queue = NULL;
 
-void engine_task_gpio(void *pvParameters) {
+static void engine_task_gpio(void *pvParameters) {
   uint32_t i;
   for (;;) {
     if (xQueueReceive(gpio_evt_queue, &i, portMAX_DELAY)) {
-      ESP_LOGI(TAG, "GPIO[%d] intr", i);
-
-      taskENTER_CRITICAL(&my_spinlock);
+      ESP_LOGI(TAG, "GPIO[%lu] intr", i);
+      xSemaphoreTake(semaphore, portMAX_DELAY);
       radio_irq_handler(i);
-      taskEXIT_CRITICAL(&my_spinlock);
+      xSemaphoreGive(semaphore);
       run_jobs_and_schedule_next();
     }
   }
 }
 
-static gptimer_handle_t gptimer = NULL;
-
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
-    uint32_t gpio_num = (uint32_t) arg;
-    xQueueSendFromISR(gpio_evt_queue, &gpio_num, NULL);
+    uint32_t i = (uint32_t) arg;
+    xQueueSendFromISR(gpio_evt_queue, &i, NULL);
 }
 
 static void hal_io_init() {
@@ -90,6 +87,11 @@ static void hal_io_init() {
       gpio_isr_handler_add(lmic_pins.dio[i], gpio_isr_handler, (void*) i);
     }
   }
+
+  gpio_evt_queue = xQueueCreate( 10, sizeof(uint32_t));
+
+ xTaskCreate(engine_task_gpio, "engineTaskGpio", 8192, NULL, tskIDLE_PRIORITY,
+              NULL);
 
   ESP_LOGI(TAG, "Finished IO initialization");
 }
@@ -199,24 +201,33 @@ static TaskHandle_t engine_task_handle;
 static gptimer_handle_t gptimer = NULL;
 
 void run_jobs_and_schedule_next() {
-  taskENTER_CRITICAL(&my_spinlock);
+  xSemaphoreTake(semaphore, portMAX_DELAY);
 
-  while (jobs->deadline <= hal_ticks() + 1) { // Execute jobs 20us early
+  while (jobs != NULL && jobs->deadline <= hal_ticks() + 1) { // Execute jobs 20us early
     osjob_t* job = jobs;
+
+    ESP_LOGI(TAG, "Running job: %p, cb: %p, at: %lu", job, job->func,
+             job->deadline);
+
     jobs = job->next;
     job->func(job);
     free(job);
   }
-  gptimer_alarm_config_t alarm_config = {
-      .alarm_count = jobs->deadline,
-  };
-  ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
-  taskEXIT_CRITICAL(&my_spinlock);
+  if (jobs != NULL) {
+    gptimer_alarm_config_t alarm_config = {
+        .alarm_count = jobs->deadline,
+    };
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
+  } else {
+    ESP_LOGI(TAG, "No more jobs");
+  }
+
+  xSemaphoreGive(semaphore);
 }
 
 void engine_task(void *pvParameters) {
   while (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
-    ESP_LOGI(TAG, "Time %lu", hal_ticks());
+    ESP_LOGI(TAG, "Woke up at %lu", hal_ticks());
     if (jobs == NULL) {
       ESP_LOGE("HAL", "jobs is NULL main task has been woken up without tasks");
       exit(1);
@@ -233,18 +244,14 @@ static IRAM_ATTR bool timer_on_alarm_cb(gptimer_handle_t timer,
   return pdTRUE;
 }
 
-void hal_schedule_wakeup_at(u4_t time) {
-  u4_t now = hal_ticks();
-  gptimer_alarm_config_t alarm_config = {
-      .alarm_count = time,
-  };
-  ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
-}
-
 static void hal_time_init() {
   ESP_LOGI(TAG, "Starting initialisation of timer");
   xTaskCreate(engine_task, "engineTask", 8192, NULL, tskIDLE_PRIORITY,
               &engine_task_handle);
+
+  semaphore = xSemaphoreCreateBinary();
+  xSemaphoreGive(semaphore);
+
   gptimer_config_t timer_config = {
       .clk_src = GPTIMER_CLK_SRC_DEFAULT,
       .direction = GPTIMER_COUNT_UP,
