@@ -28,7 +28,7 @@ extern const lmic_pinmap lmic_pins;
 
 static SemaphoreHandle_t semaphore = NULL;
 
-void run_jobs_and_schedule_next();
+static IRAM_ATTR void run_jobs_and_schedule_next();
 
 // -----------------------------------------------------------------------------
 // I/O
@@ -36,7 +36,7 @@ void run_jobs_and_schedule_next();
 
 static QueueHandle_t gpio_evt_queue = NULL;
 
-static void engine_task_gpio(void *pvParameters) {
+static IRAM_ATTR void engine_task_gpio(void *pvParameters) {
   uint32_t i;
   for (;;) {
     if (xQueueReceive(gpio_evt_queue, &i, portMAX_DELAY)) {
@@ -90,8 +90,7 @@ static void hal_io_init() {
 
   gpio_evt_queue = xQueueCreate( 10, sizeof(uint32_t));
 
- xTaskCreate(engine_task_gpio, "engineTaskGpio", 8192, NULL, tskIDLE_PRIORITY,
-              NULL);
+  xTaskCreate(engine_task_gpio, "engineTaskGpio", 8192, NULL, 10, NULL);
 
   ESP_LOGI(TAG, "Finished IO initialization");
 }
@@ -200,14 +199,13 @@ static TaskHandle_t engine_task_handle;
 
 static gptimer_handle_t gptimer = NULL;
 
-void run_jobs_and_schedule_next() {
+static void run_jobs_and_schedule_next() {
   xSemaphoreTake(semaphore, portMAX_DELAY);
 
   while (jobs != NULL && jobs->deadline <= hal_ticks() + 1) { // Execute jobs 20us early
     osjob_t* job = jobs;
 
-    ESP_LOGI(TAG, "Running job: %p, cb: %p, at: %lu", job, job->func,
-             job->deadline);
+    ESP_LOGI(TAG, "Running job: %p, cb: %p, at: %lu", job, job->func, hal_ticks());
 
     jobs = job->next;
     job->func(job);
@@ -225,7 +223,7 @@ void run_jobs_and_schedule_next() {
   xSemaphoreGive(semaphore);
 }
 
-void engine_task(void *pvParameters) {
+void IRAM_ATTR engine_task(void *pvParameters) {
   while (ulTaskNotifyTake(pdTRUE, portMAX_DELAY)) {
     ESP_LOGI(TAG, "Woke up at %lu", hal_ticks());
     if (jobs == NULL) {
@@ -240,14 +238,14 @@ void engine_task(void *pvParameters) {
 static IRAM_ATTR bool timer_on_alarm_cb(gptimer_handle_t timer,
                                       const gptimer_alarm_event_data_t *edata,
                                       void *user_ctx) {
-  vTaskNotifyGiveFromISR(engine_task_handle, tskIDLE_PRIORITY);
+  ESP_DRAM_LOGI(TAG, "Alarm at %lu", hal_ticks());
+  vTaskNotifyGiveFromISR(engine_task_handle, NULL);
   return pdTRUE;
 }
 
 static void hal_time_init() {
   ESP_LOGI(TAG, "Starting initialisation of timer");
-  xTaskCreate(engine_task, "engineTask", 8192, NULL, tskIDLE_PRIORITY,
-              &engine_task_handle);
+  xTaskCreate(engine_task, "engineTask", 8192, NULL, 10, &engine_task_handle);
 
   semaphore = xSemaphoreCreateBinary();
   xSemaphoreGive(semaphore);
