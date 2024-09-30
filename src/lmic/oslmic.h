@@ -91,10 +91,10 @@ void os_runloop_once (void);
 
 
 #ifndef RX_RAMPUP
-#define RX_RAMPUP  (us2osticks(2000))
+#define RX_RAMPUP  (us2osticks(6000))
 #endif
 #ifndef TX_RAMPUP
-#define TX_RAMPUP  (us2osticks(2000))
+#define TX_RAMPUP  (us2osticks(6000))
 #endif
 
 #ifndef OSTICKS_PER_SEC

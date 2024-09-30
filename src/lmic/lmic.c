@@ -42,7 +42,7 @@
 #endif
 
 // Special APIs - for development or testing
-#define isTESTMODE() 0
+#define isTESTMODE() 1
 
 DEFINE_LMIC;
 
@@ -554,10 +554,10 @@ static void initDefaultChannels (bit_t join) {
         LMIC.channelDrMap[fu] = DR_RANGE_MAP(DR_SF12,DR_SF7);
     }
 
-    LMIC.bands[BAND_MILLI].txcap    = 1000;  // 0.1%
+    LMIC.bands[BAND_MILLI].txcap    = 10;  // 0.1%
     LMIC.bands[BAND_MILLI].txpow    = 14;
     LMIC.bands[BAND_MILLI].lastchnl = os_getRndU1() % MAX_CHANNELS;
-    LMIC.bands[BAND_CENTI].txcap    = 100;   // 1%
+    LMIC.bands[BAND_CENTI].txcap    = 10;   // 1%
     LMIC.bands[BAND_CENTI].txpow    = 14;
     LMIC.bands[BAND_CENTI].lastchnl = os_getRndU1() % MAX_CHANNELS;
     LMIC.bands[BAND_DECI ].txcap    = 10;    // 10%
@@ -1431,7 +1431,6 @@ static void onJoinFailed (xref2osjob_t osjob) {
     reportEvent(EV_JOIN_FAILED);
 }
 
-
 static bit_t processJoinAccept (void) {
     ASSERT(LMIC.txrxFlags != TXRX_DNW1 || LMIC.dataLen != 0);
     ASSERT((LMIC.opmode & OP_TXRXPEND)!=0);
@@ -1481,7 +1480,7 @@ static bit_t processJoinAccept (void) {
         EV(specCond, ERR, (e_.reason = EV::specCond_t::JOIN_BAD_MIC,
                            e_.info   = mic));
 #if LMIC_DEBUG_LEVEL > 0
-        lmic_printf("%ld: Invalid join-frame MIC", os_getTime());
+        lmic_printf("%ld: Invalid join-frame MIC\n", os_getTime());
 #endif
         goto badframe;
     }

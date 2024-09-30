@@ -238,7 +238,6 @@ void IRAM_ATTR engine_task(void *pvParameters) {
 static IRAM_ATTR bool timer_on_alarm_cb(gptimer_handle_t timer,
                                       const gptimer_alarm_event_data_t *edata,
                                       void *user_ctx) {
-  ESP_DRAM_LOGI(TAG, "Alarm at %lu", hal_ticks());
   vTaskNotifyGiveFromISR(engine_task_handle, NULL);
   return pdTRUE;
 }
